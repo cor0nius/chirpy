@@ -13,17 +13,17 @@ func main() {
 	apiCfg := &apiConfig{}
 	apiCfg.fileserverHits.Store(0)
 	serveMux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir("app")))))
-	serveMux.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
+	serveMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
-	serveMux.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
+	serveMux.HandleFunc("GET /metrics", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
 		fmt.Fprintf(w, "Hits: %v", apiCfg.fileserverHits.Load())
 	})
-	serveMux.HandleFunc("/reset", func(w http.ResponseWriter, req *http.Request) {
+	serveMux.HandleFunc("POST /reset", func(w http.ResponseWriter, req *http.Request) {
 		apiCfg.fileserverHits.Store(0)
 	})
 	err := server.ListenAndServe()
