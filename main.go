@@ -1,20 +1,33 @@
 package main
 
 import (
+	"chirpy/internal/database"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Print(err)
+	}
 	serveMux := http.NewServeMux()
 	server := http.Server{Handler: serveMux}
 	server.Addr = ":8080"
 	apiCfg := &apiConfig{}
 	apiCfg.fileserverHits.Store(0)
+	apiCfg.dbQueries = database.New(db)
 	serveMux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir("app")))))
 	serveMux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -49,7 +62,7 @@ func main() {
 			respondWithJSON(w, 200, resp)
 		}
 	})
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil {
 		fmt.Print(err)
 	}
@@ -57,6 +70,7 @@ func main() {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 type error struct {
