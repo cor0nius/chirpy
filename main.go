@@ -10,7 +10,9 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -40,14 +42,18 @@ func main() {
 		_, _ = fmt.Fprintf(w, "<html><body><h1>Welcome, Chirpy Admin</h1><p>Chirpy has been visited %d times!</p></body></html>", apiCfg.fileserverHits.Load())
 	})
 	serveMux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, req *http.Request) {
-		apiCfg.fileserverHits.Store(0)
-	})
-	serveMux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, req *http.Request) {
-		type chirp struct {
-			Body string `json:"body"`
+		if platform := os.Getenv("PLATFORM"); platform != "dev" {
+			w.WriteHeader(403)
+		} else {
+			apiCfg.fileserverHits.Store(0)
+			_ = apiCfg.dbQueries.DeleteAllUsers(req.Context())
+			_ = apiCfg.dbQueries.DeleteAllChirps(req.Context())
+			w.WriteHeader(200)
 		}
+	})
+	serveMux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, req *http.Request) {
+		newChirp := Chirp{}
 		decoder := json.NewDecoder(req.Body)
-		newChirp := chirp{}
 		err := decoder.Decode(&newChirp)
 		if err != nil {
 			respondWithError(w, 400, "Error decoding chirp")
@@ -55,12 +61,61 @@ func main() {
 		}
 		if len(newChirp.Body) > 140 {
 			respondWithError(w, 400, "Chirp is too long")
-		} else {
-			resp := struct {
-				CleanedBody string `json:"cleaned_body"`
-			}{CleanedBody: cleanChirp(newChirp.Body)}
-			respondWithJSON(w, 200, resp)
+			return
 		}
+		newChirp.Body = cleanChirp(newChirp.Body)
+		c, err := apiCfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{Body: newChirp.Body, UserID: newChirp.UserID})
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		newChirp.ID = c.ID
+		newChirp.CreatedAt = c.CreatedAt
+		newChirp.UpdatedAt = c.UpdatedAt
+		respondWithJSON(w, 201, newChirp)
+	})
+	serveMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, req *http.Request) {
+		dbChirps, err := apiCfg.dbQueries.ListChirps(req.Context())
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		chirps := make([]Chirp, len(dbChirps))
+		for i := range dbChirps {
+			chirps[i] = Chirp(dbChirps[i])
+		}
+		respondWithJSON(w, 200, chirps)
+	})
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, req *http.Request) {
+		chirpIDstring := req.PathValue("chirpID")
+		chirpID, err := uuid.Parse(chirpIDstring)
+		if err != nil {
+			respondWithError(w, 400, "Invalid ChirpID")
+		}
+		dbChirp, err := apiCfg.dbQueries.GetChirp(req.Context(), chirpID)
+		if err != nil {
+			respondWithError(w, 404, "Chirp doesn't exist")
+		}
+		chirp := Chirp(dbChirp)
+		respondWithJSON(w, 200, chirp)
+	})
+	serveMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, req *http.Request) {
+		newUser := User{}
+		decoder := json.NewDecoder(req.Body)
+		err := decoder.Decode(&newUser)
+		if err != nil {
+			respondWithError(w, 400, "Error decoding user")
+			return
+		}
+		u, err := apiCfg.dbQueries.CreateUser(req.Context(), newUser.Email)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		newUser.ID = u.ID
+		newUser.CreatedAt = u.CreatedAt
+		newUser.UpdatedAt = u.UpdatedAt
+		respondWithJSON(w, 201, newUser)
 	})
 	err = server.ListenAndServe()
 	if err != nil {
@@ -75,6 +130,21 @@ type apiConfig struct {
 
 type error struct {
 	Error string `json:"error"`
+}
+
+type Chirp struct {
+	ID        uuid.UUID     `json:"id"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	Body      string        `json:"body"`
+	UserID    uuid.NullUUID `json:"user_id"`
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
