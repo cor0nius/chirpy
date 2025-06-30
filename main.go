@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
@@ -100,22 +101,53 @@ func main() {
 		respondWithJSON(w, 200, chirp)
 	})
 	serveMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, req *http.Request) {
-		newUser := User{}
+		userCreds := Login{}
 		decoder := json.NewDecoder(req.Body)
-		err := decoder.Decode(&newUser)
+		err := decoder.Decode(&userCreds)
 		if err != nil {
-			respondWithError(w, 400, "Error decoding user")
+			respondWithError(w, 400, "Error decoding user data")
 			return
 		}
-		u, err := apiCfg.dbQueries.CreateUser(req.Context(), newUser.Email)
+		hashedPassword, err := auth.HashPassword(userCreds.Password)
+		if err != nil {
+			respondWithError(w, 500, "Error hashing password")
+			return
+		}
+		u, err := apiCfg.dbQueries.CreateUser(req.Context(), database.CreateUserParams{Email: userCreds.Email, HashedPassword: hashedPassword})
 		if err != nil {
 			respondWithError(w, 500, err.Error())
 			return
 		}
+		newUser := User{}
 		newUser.ID = u.ID
 		newUser.CreatedAt = u.CreatedAt
 		newUser.UpdatedAt = u.UpdatedAt
+		newUser.Email = userCreds.Email
 		respondWithJSON(w, 201, newUser)
+	})
+	serveMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, req *http.Request) {
+		userCreds := Login{}
+		decoder := json.NewDecoder(req.Body)
+		err := decoder.Decode(&userCreds)
+		if err != nil {
+			respondWithError(w, 400, "Error decoding user data")
+			return
+		}
+		thisUser, err := apiCfg.dbQueries.GetUser(req.Context(), userCreds.Email)
+		if err != nil {
+			respondWithError(w, 401, "Incorrect email or password")
+			return
+		}
+		if err = auth.CheckPasswordHash(userCreds.Password, thisUser.HashedPassword); err != nil {
+			respondWithError(w, 401, "Incorrect email or password")
+			return
+		}
+		respondWithJSON(w, 200, User{
+			ID:        thisUser.ID,
+			CreatedAt: thisUser.CreatedAt,
+			UpdatedAt: thisUser.UpdatedAt,
+			Email:     thisUser.Email,
+		})
 	})
 	err = server.ListenAndServe()
 	if err != nil {
@@ -145,6 +177,11 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+}
+
+type Login struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
