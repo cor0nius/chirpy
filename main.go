@@ -31,6 +31,7 @@ func main() {
 	apiCfg := &apiConfig{}
 	apiCfg.fileserverHits.Store(0)
 	apiCfg.dbQueries = database.New(db)
+	apiCfg.secret = os.Getenv("JWT_SECRET")
 	serveMux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir("app")))))
 	serveMux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -53,9 +54,19 @@ func main() {
 		}
 	})
 	serveMux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, req *http.Request) {
+		token, err := auth.GetBearerToken(req.Header)
+		if err != nil {
+			respondWithError(w, 400, "Error fetching authorization token")
+			return
+		}
+		userID, err := auth.ValidateJWT(token, apiCfg.secret)
+		if err != nil {
+			respondWithError(w, 401, err.Error())
+		}
 		newChirp := Chirp{}
+		newChirp.UserID = userID
 		decoder := json.NewDecoder(req.Body)
-		err := decoder.Decode(&newChirp)
+		err = decoder.Decode(&newChirp)
 		if err != nil {
 			respondWithError(w, 400, "Error decoding chirp")
 			return
@@ -65,7 +76,7 @@ func main() {
 			return
 		}
 		newChirp.Body = cleanChirp(newChirp.Body)
-		c, err := apiCfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{Body: newChirp.Body, UserID: newChirp.UserID})
+		c, err := apiCfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{Body: newChirp.Body, UserID: userID})
 		if err != nil {
 			respondWithError(w, 500, err.Error())
 			return
@@ -127,6 +138,7 @@ func main() {
 	})
 	serveMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, req *http.Request) {
 		userCreds := Login{}
+		userCreds.ExpiresIn = time.Hour
 		decoder := json.NewDecoder(req.Body)
 		err := decoder.Decode(&userCreds)
 		if err != nil {
@@ -142,11 +154,16 @@ func main() {
 			respondWithError(w, 401, "Incorrect email or password")
 			return
 		}
+		token, err := auth.MakeJWT(thisUser.ID, apiCfg.secret, userCreds.ExpiresIn)
+		if err != nil {
+			respondWithError(w, 500, "Error generating JWT token")
+		}
 		respondWithJSON(w, 200, User{
 			ID:        thisUser.ID,
 			CreatedAt: thisUser.CreatedAt,
 			UpdatedAt: thisUser.UpdatedAt,
 			Email:     thisUser.Email,
+			Token:     token,
 		})
 	})
 	err = server.ListenAndServe()
@@ -158,6 +175,7 @@ func main() {
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	secret         string
 }
 
 type error struct {
@@ -165,11 +183,11 @@ type error struct {
 }
 
 type Chirp struct {
-	ID        uuid.UUID     `json:"id"`
-	CreatedAt time.Time     `json:"created_at"`
-	UpdatedAt time.Time     `json:"updated_at"`
-	Body      string        `json:"body"`
-	UserID    uuid.NullUUID `json:"user_id"`
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 type User struct {
@@ -177,11 +195,13 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 type Login struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email     string        `json:"email"`
+	Password  string        `json:"password"`
+	ExpiresIn time.Duration `json:"expires_in_seconds"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -199,7 +219,6 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(code)
 	w.Write(resp)
 }
 

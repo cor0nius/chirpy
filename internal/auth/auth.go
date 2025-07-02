@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -32,9 +35,9 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256,
 		jwt.RegisteredClaims{Issuer: "chirpy",
 			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(expiresIn)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn).UTC()),
 			Subject:   userID.String()})
-	signedToken, err := token.SignedString(tokenSecret)
+	signedToken, err := token.SignedString([]byte(tokenSecret))
 	if err != nil {
 		return "", err
 	}
@@ -42,13 +45,14 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 }
 
 func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
-	token := &jwt.Token{}
-	token, err := jwt.ParseWithClaims(tokenString, token.Claims, func(tkn *jwt.Token) (interface{}, error) {
+	claims := jwt.RegisteredClaims{}
+	token, err := jwt.NewParser().ParseWithClaims(tokenString, &claims, func(tkn *jwt.Token) (any, error) {
 		return []byte(tokenSecret), nil
 	})
 	if err != nil {
 		return uuid.Nil, err
 	}
+	token.Claims = jwt.Claims(claims)
 	tokenSubject, err := token.Claims.GetSubject()
 	if err != nil {
 		return uuid.Nil, err
@@ -58,4 +62,16 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	return userID, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	bearer := headers.Get("Authorization")
+	if bearer == "" {
+		return "", errors.New("no appropriate header or header is empty")
+	}
+	bearerToken, ok := strings.CutPrefix(bearer, "Bearer ")
+	if !ok {
+		return "", errors.New("no Bearer token in header")
+	}
+	return bearerToken, nil
 }

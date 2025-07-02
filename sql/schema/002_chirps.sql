@@ -4,7 +4,7 @@ CREATE TABLE chirps (
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     body TEXT NOT NULL,
-    user_id UUID REFERENCES users ON DELETE CASCADE
+    user_id UUID REFERENCES users ON DELETE CASCADE NOT NULL
 ); 
 
 -- +goose Down
