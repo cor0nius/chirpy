@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,7 @@ func main() {
 	apiCfg.fileserverHits.Store(0)
 	apiCfg.dbQueries = database.New(db)
 	apiCfg.secret = os.Getenv("JWT_SECRET")
+	apiCfg.polkaKey = os.Getenv("POLKA_KEY")
 	serveMux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir("app")))))
 	serveMux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -88,16 +90,38 @@ func main() {
 		respondWithJSON(w, 201, newChirp)
 	})
 	serveMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, req *http.Request) {
-		dbChirps, err := apiCfg.dbQueries.ListChirps(req.Context())
-		if err != nil {
-			respondWithError(w, 500, err.Error())
-			return
+		var dbChirps []database.Chirp
+		author := req.URL.Query().Get("author_id")
+		if author == "" {
+			dbChirps, err = apiCfg.dbQueries.ListChirps(req.Context())
+			if err != nil {
+				respondWithError(w, 500, err.Error())
+				return
+			}
+		} else {
+			userID, err := uuid.Parse(author)
+			if err != nil {
+				respondWithError(w, 400, "User not found")
+				return
+			}
+			dbChirps, err = apiCfg.dbQueries.ListChirpsFromAuthor(req.Context(), userID)
+			if err != nil {
+				respondWithError(w, 500, err.Error())
+				return
+			}
 		}
 		chirps := make([]Chirp, len(dbChirps))
 		for i := range dbChirps {
 			chirps[i] = Chirp(dbChirps[i])
 		}
-		respondWithJSON(w, 200, chirps)
+		sort := req.URL.Query().Get("sort")
+		switch sort {
+		case "", "asc":
+			respondWithJSON(w, 200, chirps)
+		case "desc":
+			slices.Reverse(chirps)
+			respondWithJSON(w, 200, chirps)
+		}
 	})
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, req *http.Request) {
 		chirpIDstring := req.PathValue("chirpID")
@@ -287,9 +311,18 @@ func main() {
 		respondWithJSON(w, 204, nil)
 	})
 	serveMux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, req *http.Request) {
+		apiKey, err := auth.GetAPIKey(req.Header)
+		if err != nil {
+			respondWithError(w, 401, "Error fetching API key")
+			return
+		}
+		if apiKey != apiCfg.polkaKey {
+			respondWithError(w, 401, "Invalid API Key")
+			return
+		}
 		webhook := Webhook{}
 		decoder := json.NewDecoder(req.Body)
-		err := decoder.Decode(&webhook)
+		err = decoder.Decode(&webhook)
 		if err != nil {
 			respondWithError(w, 400, "Error decoding request body")
 			return
@@ -315,6 +348,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	secret         string
+	polkaKey       string
 }
 
 type error struct {
