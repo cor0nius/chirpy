@@ -112,7 +112,7 @@ func main() {
 		respondWithJSON(w, 200, chirp)
 	})
 	serveMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, req *http.Request) {
-		userCreds := Login{}
+		userCreds := UserCreds{}
 		decoder := json.NewDecoder(req.Body)
 		err := decoder.Decode(&userCreds)
 		if err != nil {
@@ -137,8 +137,7 @@ func main() {
 		respondWithJSON(w, 201, newUser)
 	})
 	serveMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, req *http.Request) {
-		userCreds := Login{}
-		userCreds.ExpiresIn = time.Hour
+		userCreds := UserCreds{}
 		decoder := json.NewDecoder(req.Body)
 		err := decoder.Decode(&userCreds)
 		if err != nil {
@@ -154,17 +153,64 @@ func main() {
 			respondWithError(w, 401, "Incorrect email or password")
 			return
 		}
-		token, err := auth.MakeJWT(thisUser.ID, apiCfg.secret, userCreds.ExpiresIn)
+		token, err := auth.MakeJWT(thisUser.ID, apiCfg.secret)
 		if err != nil {
 			respondWithError(w, 500, "Error generating JWT token")
+			return
+		}
+		refreshToken, _ := auth.MakeRefreshToken()
+		err = apiCfg.dbQueries.CreateRefreshToken(req.Context(), database.CreateRefreshTokenParams{Token: refreshToken, UserID: thisUser.ID, ExpiresAt: time.Now().Add(time.Hour * 24 * 60)})
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
 		}
 		respondWithJSON(w, 200, User{
-			ID:        thisUser.ID,
-			CreatedAt: thisUser.CreatedAt,
-			UpdatedAt: thisUser.UpdatedAt,
-			Email:     thisUser.Email,
-			Token:     token,
+			ID:           thisUser.ID,
+			CreatedAt:    thisUser.CreatedAt,
+			UpdatedAt:    thisUser.UpdatedAt,
+			Email:        thisUser.Email,
+			Token:        token,
+			RefreshToken: refreshToken,
 		})
+	})
+	serveMux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, req *http.Request) {
+		bearer, err := auth.GetBearerToken(req.Header)
+		if err != nil {
+			respondWithError(w, 400, "Error fetching authorization token")
+			return
+		}
+		refreshToken, err := apiCfg.dbQueries.GetUserFromRefreshToken(req.Context(), bearer)
+		if err != nil {
+			respondWithError(w, 401, "Refresh token not found")
+			return
+		}
+		if refreshToken.ExpiresAt.Compare(time.Now()) == -1 {
+			respondWithError(w, 401, "Refresh token expired")
+			return
+		}
+		if refreshToken.RevokedAt.Valid {
+			respondWithError(w, 401, "Refresh token revoked")
+			return
+		}
+		accessToken, err := auth.MakeJWT(refreshToken.UserID, apiCfg.secret)
+		if err != nil {
+			respondWithError(w, 500, "Error creating access token")
+			return
+		}
+		respondWithJSON(w, 200, Token{Token: accessToken})
+	})
+	serveMux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, req *http.Request) {
+		bearer, err := auth.GetBearerToken(req.Header)
+		if err != nil {
+			respondWithError(w, 400, "Error fetching authorization token")
+			return
+		}
+		err = apiCfg.dbQueries.RevokeToken(req.Context(), bearer)
+		if err != nil {
+			respondWithError(w, 500, "Error revoking refresh token")
+			return
+		}
+		respondWithJSON(w, 204, nil)
 	})
 	err = server.ListenAndServe()
 	if err != nil {
@@ -191,17 +237,21 @@ type Chirp struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
-type Login struct {
-	Email     string        `json:"email"`
-	Password  string        `json:"password"`
-	ExpiresIn time.Duration `json:"expires_in_seconds"`
+type UserCreds struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type Token struct {
+	Token string `json:"token"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -219,6 +269,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 		w.WriteHeader(500)
 		return
 	}
+	w.WriteHeader(code)
 	w.Write(resp)
 }
 
