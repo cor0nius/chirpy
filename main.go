@@ -200,17 +200,52 @@ func main() {
 		respondWithJSON(w, 200, Token{Token: accessToken})
 	})
 	serveMux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, req *http.Request) {
-		bearer, err := auth.GetBearerToken(req.Header)
+		bearerToken, err := auth.GetBearerToken(req.Header)
 		if err != nil {
 			respondWithError(w, 400, "Error fetching authorization token")
 			return
 		}
-		err = apiCfg.dbQueries.RevokeToken(req.Context(), bearer)
+		err = apiCfg.dbQueries.RevokeToken(req.Context(), bearerToken)
 		if err != nil {
 			respondWithError(w, 500, "Error revoking refresh token")
 			return
 		}
 		respondWithJSON(w, 204, nil)
+	})
+	serveMux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, req *http.Request) {
+		bearerToken, err := auth.GetBearerToken(req.Header)
+		if err != nil {
+			respondWithError(w, 401, "Error fetching authorization token")
+			return
+		}
+		userID, err := auth.ValidateJWT(bearerToken, apiCfg.secret)
+		if err != nil {
+			respondWithError(w, 401, "Invalid authorization token")
+			return
+		}
+		userCreds := UserCreds{}
+		decoder := json.NewDecoder(req.Body)
+		err = decoder.Decode(&userCreds)
+		if err != nil {
+			respondWithError(w, 400, "Error decoding user data")
+			return
+		}
+		hashedPassword, err := auth.HashPassword(userCreds.Password)
+		if err != nil {
+			respondWithError(w, 500, "Error hashing password")
+			return
+		}
+		thisUser, err := apiCfg.dbQueries.ChangeEmailAndPassword(req.Context(), database.ChangeEmailAndPasswordParams{ID: userID, Email: userCreds.Email, HashedPassword: hashedPassword})
+		if err != nil {
+			respondWithError(w, 500, "Error updating user data")
+			return
+		}
+		respondWithJSON(w, 200, User{
+			ID:        thisUser.ID,
+			CreatedAt: thisUser.CreatedAt,
+			UpdatedAt: thisUser.UpdatedAt,
+			Email:     thisUser.Email,
+		})
 	})
 	err = server.ListenAndServe()
 	if err != nil {
