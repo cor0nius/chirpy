@@ -2,7 +2,7 @@
 
 Chirpy is a backend HTTP server for a simple Twitter-like application, built entirely in Go. It provides a robust JSON API for user management, posting "chirps", and authentication, all while interacting with a PostgreSQL database.
 
-This project was completed as part of the ["Learn HTTP Servers in Go"](https://www.boot.dev/) course on boot.dev, focusing on building a production-ready API from the ground up.
+This project was completed as part of the ["Learn HTTP Servers in Go"](https://www.boot.dev/courses/learn-http-servers-golang) course on boot.dev, focusing on building a production-ready API from the ground up.
 
 ## Features
 
